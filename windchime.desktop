@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Windchime
+Comment=Gentle windchimes as you type
+Exec=/opt/windchime/windchime --show
+Icon=windchime
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+Keywords=typing;chimes;ambient;keyboard;
+StartupNotify=false
