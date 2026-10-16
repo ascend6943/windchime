@@ -261,6 +261,7 @@ class App : public QObject {
         qApp->arguments().contains("--ui-check") || qApp->arguments().contains("--render");
     int keyboardCount = 0, previewGeneration = 0;
     quint64 lockRevision = 0;
+    int lockService = 0; // 0 = freedesktop default, 1 = GNOME fallback answered
     quint64 sounded = 0;
     QString controlPath;
     int density() const {
@@ -498,21 +499,40 @@ class App : public QObject {
         helper.abort();
         helper.connectToServer("/run/windchime/input.sock");
     }
-    void refreshLock() {
+    void refreshLock(bool desktopFallback = false) {
         if (diagnosticMode)
             return;
         auto revision = lockRevision;
-        auto m = QDBusMessage::createMethodCall("org.freedesktop.ScreenSaver", "/ScreenSaver",
-                                                "org.freedesktop.ScreenSaver", "GetActive");
+        // Most desktops answer GetActive on the shared freedesktop name, but
+        // GNOME implements only idle inhibition there, so fall back to the
+        // desktop-specific screen-saver service when that call fails. Once a
+        // service answers, keep using it instead of failing every other call.
+        bool gnome = desktopFallback || lockService == 1;
+        auto m = gnome
+                     ? QDBusMessage::createMethodCall(
+                           "org.gnome.ScreenSaver", "/org/gnome/ScreenSaver",
+                           "org.gnome.ScreenSaver", "GetActive")
+                     : QDBusMessage::createMethodCall("org.freedesktop.ScreenSaver", "/ScreenSaver",
+                                                      "org.freedesktop.ScreenSaver", "GetActive");
         auto *w =
             new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(m, 1000), this);
-        connect(w, &QDBusPendingCallWatcher::finished, this, [this, w, revision] {
+        connect(w, &QDBusPendingCallWatcher::finished, this, [this, w, revision, gnome] {
             QDBusPendingReply<bool> r = *w;
-            if (revision == lockRevision) {
-                lockKnown = !r.isError();
-                applyLock(lockKnown ? r.value() : true);
-            }
             w->deleteLater();
+            if (revision != lockRevision)
+                return;
+            if (r.isError()) {
+                if (!gnome) {
+                    refreshLock(true);
+                    return;
+                }
+                lockKnown = false;
+                applyLock(true);
+                return;
+            }
+            lockService = gnome ? 1 : 0;
+            lockKnown = true;
+            applyLock(r.value());
         });
     }
     void applyLock(bool locked) {
@@ -753,6 +773,8 @@ class App : public QObject {
         qDBusRegisterMetaType<QList<Shortcut>>();
         auto bus = QDBusConnection::sessionBus();
         bus.connect("org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver",
+                    "ActiveChanged", this, SLOT(lockChanged(bool)));
+        bus.connect("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver",
                     "ActiveChanged", this, SLOT(lockChanged(bool)));
         bus.connect("org.freedesktop.portal.Desktop", "", "org.freedesktop.portal.Request",
                     "Response", this, SLOT(portalResponse(uint, QVariantMap, QDBusMessage)));
